@@ -27,6 +27,34 @@ class FieldCleanseService(BaseModuleService):
         "format_id": lambda v: v.replace("-", "").replace(" ", "").upper() if isinstance(v, str) else v,
     }
 
+    def cleanse_with_reference(self, category: str, raw_value: str) -> dict[str, Any]:
+        """按数据类别取用分组参考数据，把别名/非标值写回标准编码。
+
+        查询参考数据管理中该类别的已生效字典，命中标准编码、标准名称
+        或别名（如省份别名「沪」）时，返回对应的标准编码作为清洗结果。
+        """
+        from app.services.mdm_reference import MdmReferenceService
+
+        ref = MdmReferenceService().lookup_reference_value(category, raw_value)
+        if ref is None:
+            return {
+                "ok": False,
+                "reason": f"参考数据未匹配：{category}/{raw_value}",
+                "category": category,
+                "raw": raw_value,
+                "cleansed": raw_value,
+            }
+        # 按类别取用参考数据：别名写回该字段对应的标准编码
+        return {
+            "ok": True,
+            "category": category,
+            "raw": raw_value,
+            "cleansed": ref["standard_code"],
+            "standard_code": ref["standard_code"],
+            "standard_name": ref["standard_name"],
+            "applied_functions": [f"reference:{category}"],
+        }
+
     def cleanse_field_value(self, rule_id: int, raw_value: str) -> dict[str, Any]:
         """清洗字段值：按清洗规则执行标准化函数和修正字典映射。
 
@@ -47,6 +75,13 @@ class FieldCleanseService(BaseModuleService):
         dict_entries = [d.strip() for d in rule.get("修正字典", "").split(",") if ":" in d]
         for entry in dict_entries:
             wrong, correct = entry.split(":", 1)
+            if wrong.strip() == "ref":
+                # 修正字典声明 ref:<数据类别> 时，按类别取用参考数据写回标准编码
+                ref_result = self.cleanse_with_reference(correct.strip(), str(value))
+                if ref_result["ok"]:
+                    value = ref_result["cleansed"]
+                    applied.append(f"ref:{correct.strip()}->{value}")
+                continue
             if isinstance(value, str) and wrong.strip() in value:
                 value = value.replace(wrong.strip(), correct.strip())
                 applied.append(f"dict:{wrong.strip()}->{correct.strip()}")
